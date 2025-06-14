@@ -1,0 +1,285 @@
+#!/bin/bash
+
+# --- Color Definitions ---
+Green="\e[92;1m"
+RED="\033[31m"
+YELLOW="\033[33m"
+BLUE="\033[36m"
+FONT="\033[0m"
+GREENBG="\033[42;37m"
+REDBG="\033[41;37m"
+OK="${Green}--->${FONT}"
+ERROR="${RED}[ERROR]${FONT}"
+GRAY="\e[1;30m"
+NC='\e[0m'
+red='\e[1;31m'
+green='\e[0;32m'
+purple="\e[0;33m"
+yell="\e[1;33m"
+
+# --- Helper Functions ---
+function print_install() {
+    echo -e "${green} =============================== ${FONT}"
+    echo -e "${YELLOW} # $1 ${FONT}"
+    echo -e "${green} =============================== ${FONT}"
+    sleep 1
+}
+
+function print_success() {
+    if [[ 0 -eq $? ]]; then
+        echo -e "${green} =============================== ${FONT}"
+        echo -e "${Green} # $1 berhasil dihapus"
+        echo -e "${green} =============================== ${FONT}"
+        sleep 2
+    fi
+}
+
+function print_error() {
+    echo -e "${ERROR} ${REDBG} $1 ${FONT}"
+}
+
+# --- Initial Checks ---
+clear
+echo -e "${YELLOW}----------------------------------------------------------${NC}"
+echo -e "           HOKAGE LEGEND STORE VPN UNINSTALLER"
+echo -e "${purple}----------------------------------------------------------${NC}"
+echo -e " Script ini akan menghapus komponen VPN yang diinstal."
+echo -e " Proses ini akan memakan waktu dan membutuhkan restart."
+echo -e "${YELLOW}----------------------------------------------------------${NC}"
+echo ""
+
+if [ "${EUID}" -ne 0 ]; then
+    echo -e "${ERROR} Anda perlu menjalankan skrip ini sebagai root."
+    exit 1
+fi
+
+read -p "$(echo -e "Tekan ${GRAY}[ ${NC}${green}Enter${NC} ${GRAY}]${NC} untuk memulai uninstal, atau ${RED}Ctrl+C${NC} untuk membatalkan.") "
+echo ""
+clear
+
+# --- Stop and Disable Services ---
+print_install "Menghentikan dan menonaktifkan layanan VPN..."
+systemctl stop nginx.service || true
+systemctl disable nginx.service || true
+systemctl stop xray.service || true
+systemctl disable xray.service || true
+systemctl stop dropbear.service || true
+systemctl disable dropbear.service || true
+systemctl stop ws.service || true
+systemctl disable ws.service || true
+systemctl stop udp-mini-1.service || true
+systemctl disable udp-mini-1.service || true
+systemctl stop udp-mini-2.service || true
+systemctl disable udp-mini-2.service || true
+systemctl stop udp-mini-3.service || true
+systemctl disable udp-mini-3.service || true
+systemctl stop fail2ban.service || true
+systemctl disable fail2ban.service || true
+systemctl stop vnstat.service || true
+systemctl disable vnstat.service || true
+systemctl stop haproxy.service || true
+systemctl disable haproxy.service || true
+systemctl stop rc-local.service || true # Hentikan rc-local
+systemctl disable rc-local.service || true # Nonaktifkan rc-local
+
+print_success "Layanan VPN dihentikan dan dinonaktifkan."
+
+# --- Remove Packages ---
+print_install "Menghapus paket-paket yang diinstal..."
+
+# List paket yang diinstal oleh skrip Anda
+VPN_PACKAGES=(
+    nginx
+    dropbear
+    fail2ban
+    vnstat
+    rclone
+    msmtp-mta
+    bsd-mailx
+    speedtest-cli
+    figlet
+    lolcat # Ruby gem, tapi bisa dihapus paket ruby
+    wondershaper
+    socat
+    jq
+    openvpn
+    easy-rsa
+    haproxy
+    netcat-traditional # Atau netcat-openbsd, sesuai yang diinstal
+    # python3-pip # Jangan hapus jika sistem lain menggunakannya
+    # ruby # Jangan hapus jika sistem lain menggunakannya
+    # build-essential # Jangan hapus, ini dependensi sistem
+)
+
+# Hapus Xray core secara spesifik
+/usr/local/bin/xray uninstall || true
+rm -f /usr/local/bin/xray || true
+
+# Hapus paket-paket
+apt purge -y "${VPN_PACKAGES[@]}" || print_error "Beberapa paket mungkin gagal dihapus."
+apt autoremove -y
+apt clean
+
+print_success "Paket VPN dihapus."
+
+# --- Delete Directories and Files ---
+print_install "Menghapus direktori dan file konfigurasi..."
+
+# Direktori Xray dan log
+rm -rf /etc/xray || true
+rm -rf /var/log/xray || true
+rm -rf /var/lib/kyt || true
+
+# Direktori database akun
+rm -rf /etc/vmess || true
+rm -rf /etc/vless || true
+rm -rf /etc/trojan || true
+rm -rf /etc/shadowsocks || true
+rm -rf /etc/ssh/.ssh.db || true # Hanya file db, bukan seluruh folder ssh
+rm -rf /etc/bot || true
+rm -rf /etc/user-create || true
+
+# Direktori limit
+rm -rf /etc/kyt/limit || true
+rm -rf /etc/limit || true
+
+# File dan binary yang diunduh
+rm -f /usr/local/kyt/udp-mini || true
+rm -f /etc/systemd/system/udp-mini-1.service || true
+rm -f /etc/systemd/system/udp-mini-2.service || true
+rm -f /etc/systemd/system/udp-mini-3.service || true
+
+rm -rf /usr/local/ddos || true # Direktori DDOS Flate jika dibuat
+rm -rf /root/.acme.sh || true # Direktori acme.sh
+rm -rf /root/.config/rclone || true # Konfigurasi rclone
+
+rm -f /usr/local/sbin/wondershaper || true
+rm -f /etc/wondershaper.conf || true
+
+rm -f /etc/msmtprc || true
+rm -f ~/.msmtp.log || true # Log msmtp
+rm -f /etc/ipserver || true
+
+rm -f /swapfile || true # File swap
+sed -i '/swapfile/d' /etc/fstab || true # Hapus entri dari fstab
+
+rm -f /etc/kyt.txt || true # Banner Dropbear
+rm -f /usr/bin/ws || true
+rm -f /usr/bin/tun.conf || true
+rm -f /etc/systemd/system/ws.service || true
+rm -f /usr/sbin/ftvpn || true
+
+rm -f /root/.isp || true
+rm -f /root/.city || true
+rm -rf /root/.info || true # Direktori info
+
+rm -f /usr/bin/user || true
+rm -f /usr/bin/e || true
+
+# File menu dan cron job scripts
+rm -f /usr/local/sbin/xp || true
+rm -f /usr/local/sbin/clearlog || true
+rm -f /usr/local/sbin/limit-ip || true
+rm -f /usr/local/sbin/limit-ip-ssh || true
+rm -f /usr/local/sbin/menu || true # Jika menu sendiri adalah file
+
+rm -f /home/daily_reboot || true
+rm -f /home/limit || true
+rm -f /root/install.log || true
+rm -f log-install.txt || true
+
+# File sementara instalasi
+rm -f /tmp/menu.zip || true
+rm -rf /tmp/menu_temp || true
+rm -f /tmp/fv-tunnel || true
+rm -f /tmp/bbr.sh || true
+rm -f /tmp/udp-custom.sh || true
+rm -f /tmp/nameserver || true
+rm -f /tmp/gotop.deb || true
+
+print_success "Direktori dan file konfigurasi dihapus."
+
+# --- Revert System Changes ---
+print_install "Mengembalikan perubahan konfigurasi sistem..."
+
+# IPtables rules
+iptables -F || true # Flush semua aturan di chain FILTER
+iptables -X || true # Hapus semua chain buatan pengguna di chain FILTER
+iptables -t nat -F || true # Flush semua aturan di chain NAT
+iptables -t nat -X || true # Hapus semua chain buatan pengguna di chain NAT
+iptables -t mangle -F || true # Flush semua aturan di chain MANGLE
+iptables -t mangle -X || true # Hapus semua chain buatan pengguna di chain MANGLE
+iptables -t raw -F || true # Flush semua aturan di chain RAW
+iptables -t raw -X || true # Hapus semua chain buatan pengguna di chain RAW
+
+rm -f /etc/iptables.up.rules || true # Hapus file aturan yang disimpan
+netfilter-persistent save || true
+netfilter-persistent reload || true
+systemctl restart netfilter-persistent.service || true # Restart layanan netfilter-persistent
+
+# rc.local file
+cat >/etc/rc.local <<EOF
+#!/bin/sh -e
+#
+# rc.local
+#
+# This script is executed at the end of each multiuser runlevel.
+# Make sure that the script will "exit 0" on success or any other
+# value on error.
+#
+# In order to enable or disable this script just change the execution
+# bits.
+#
+# By default this script does nothing.
+
+exit 0
+EOF
+chmod +x /etc/rc.local || true
+
+# Re-enable IPv6 (Default state)
+echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6 || true
+sed -i '/disable_ipv6/d' /etc/rc.local || true # Hapus baris disable ipv6 dari rc.local
+
+# SSHd config - Revert AcceptEnv change if original was different
+# Jika Anda memodifikasi /etc/ssh/sshd_config lebih dari AcceptEnv, pertimbangkan untuk mencadangkan /etc/ssh/sshd_config sebelum instalasi.
+sed -i 's/#AcceptEnv/AcceptEnv/g' /etc/ssh/sshd_config || true # Mengembalikan perubahan AcceptEnv
+
+# Shells - Remove /bin/false and /usr/sbin/nologin if added by script
+sed -i '\/bin\/false/d' /etc/shells || true
+sed -i '\/usr\/sbin\/nologin/d' /etc/shells || true
+
+# Cron jobs files
+rm -f /etc/cron.d/xp_all || true
+rm -f /etc/cron.d/logclean || true
+rm -f /etc/cron.d/daily_reboot || true
+rm -f /etc/cron.d/limit_ip || true
+rm -f /etc/cron.d/lim-ip-ssh || true
+rm -f /etc/cron.d/limit_ip2 || true
+rm -f /etc/cron.d/log.nginx || true
+rm -f /etc/cron.d/log.xray || true
+systemctl restart cron.service || true
+
+# Revert hostname to default
+# Mendapatkan hostname asli sebelum diubah oleh skrip (jika disimpan)
+# Jika tidak ada cadangan, cukup setel ke localhost
+# Atau biarkan, karena ini biasanya tidak kritis dan bisa diatur ulang pengguna.
+hostnamectl set-hostname localhost || true
+
+print_success "Perubahan konfigurasi sistem dikembalikan."
+
+# --- Final Cleanup ---
+print_install "Melakukan pembersihan akhir..."
+apt update -y || true
+apt autoremove --purge -y || true
+apt clean || true
+print_success "Pembersihan akhir selesai."
+
+echo ""
+echo -e "${YELLOW}----------------------------------------------------------${NC}"
+echo -e "                   UNINSTALLASI SELESAI!"
+echo -e " VPS akan reboot untuk menerapkan semua perubahan."
+echo -e "${YELLOW}----------------------------------------------------------${NC}"
+echo ""
+echo -ne "[ ${yell}COMPLETED${NC} ] UNINSTALLASI SCRIPT SELESAI. Rebooting..."
+sleep 3
+reboot

@@ -1,0 +1,345 @@
+#!/bin/bash
+
+# ===============================================
+# Menu Script Installer Script
+# (Creates and sets up the xray_menu.sh)
+# ===============================================
+
+# --- Arguments from main_installer.sh ---
+MENU_SCRIPT_PATH="$1"
+XRAY_CONFIG_FILE_PATH="$2" # Path to config.json
+DOMAIN_FILE_PATH="$3"      # Path to domain.txt
+XRAY_BIN_PATH="$4"         # Path to xray binary
+XRAY_TLS_DIR="$5"          # Path to TLS certs
+CLOUDFLARE_API_CRED_FILE_PATH="$6" # Path to XRAY_CONFIG_DIR/cf_api.conf
+
+# --- Colors for Output (copied from main script for local scope) ---
+RED='\033[0m\033[1;31m'
+GREEN='\033[0m\033[1;32m'
+YELLOW='\033[0m\033[1;33m'
+NC='\033[0m'
+
+# --- Helper Functions (local to this script) ---
+print_status() { echo -e "\n${YELLOW}>>> $1${NC}"; }
+print_error() { echo -e "${RED}!!! ERROR: $1${NC}" >&2; exit 1; }
+
+# --- Main Menu Script Installation Steps ---
+print_status "Executing Menu Script Installation..."
+cat << 'EOF_MENU_SCRIPT' | sudo tee "$MENU_SCRIPT_PATH" >/dev/null
+#!/bin/bash
+
+# ===============================================
+# XRAY User Management Menu Script
+# ===============================================
+
+# --- Global Variables (passed from installer) ---
+XRAY_CONFIG_FILE="${XRAY_CONFIG_FILE_PATH_VAR}" # Path to config.json
+XRAY_BIN_PATH="${XRAY_BIN_PATH_VAR}"            # Path to xray binary
+DOMAIN_FILE="${DOMAIN_FILE_PATH_VAR}"           # Path to domain.txt
+XRAY_TLS_DIR="${XRAY_TLS_DIR_VAR}"              # Path to TLS certs
+CLOUDFLARE_API_CRED_FILE="${CLOUDFLARE_API_CRED_FILE_VAR}" # Path to CF API creds
+
+# --- Colors for Output ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+# --- Helper Functions for Menu Script ---
+print_menu_header() {
+    echo -e "${GREEN}=====================================================${NC}"
+    echo -e "${GREEN}       XRAY Management Menu                        ${NC}"
+    echo -e "${GREEN}=====================================================${NC}"
+}
+
+print_menu_status() {
+    echo -e "\n${YELLOW}>>> $1${NC}"
+}
+
+print_menu_error() {
+    echo -e "${RED}!!! ERROR: $1${NC}" >&2
+}
+
+get_domain() {
+    if [ -f "$DOMAIN_FILE" ]; then
+        cat "$DOMAIN_FILE"
+    else
+        echo "yourdomain.com" # Default if file not found
+    fi
+}
+
+restart_xray() {
+    echo -e "${YELLOW}Restarting XRAY service...${NC}"
+    sudo systemctl restart xray.service
+    sleep 3
+    if sudo systemctl is-active --quiet xray.service; then
+        echo -e "${GREEN}XRAY service restarted successfully!${NC}"
+    else
+        echo -e "${RED}XRAY service failed to restart. Check logs: 'sudo journalctl -u xray --no-pager'${NC}"
+    fi
+}
+
+read_xray_config() {
+    sudo cat "$XRAY_CONFIG_FILE"
+}
+
+write_xray_config() {
+    sudo tee "$XRAY_CONFIG_FILE" >/dev/null
+}
+
+generate_uuid() {
+    uuidgen
+}
+
+# --- Main Menu Functions ---
+
+add_user() {
+    echo -e "${YELLOW}Adding new XRAY user...${NC}"
+    read -p "Enter new user email (optional, e.g., user@example.com): " USER_EMAIL
+    NEW_USER_UUID=$(generate_uuid)
+
+    CURRENT_CONFIG=$(read_xray_config)
+    
+    TMP_CONFIG=$(mktemp)
+    echo "$CURRENT_CONFIG" > "$TMP_CONFIG"
+
+    INBOUND_INDEX=$(jq '.inbounds | map(.port == 443) | index(true)' "$TMP_CONFIG")
+
+    if [ "$INBOUND_INDEX" == "null" ]; then
+        print_menu_error "Error: Inbound for port 443 (VLESS) not found in config. Cannot add user."
+        rm "$TMP_CONFIG"
+        return
+    fi
+
+    UPDATED_CONFIG=$(jq --arg uuid "$NEW_USER_UUID" \
+                        --arg email "$USER_EMAIL" \
+                        '.inbounds['"$INBOUND_INDEX"'].settings.clients += [{"id": $uuid, "level": 0, "email": $email}]' \
+                        "$TMP_CONFIG")
+
+    if [ $? -ne 0 ]; then
+        print_menu_error "Failed to add user to config. jq error or invalid JSON structure."
+        rm "$TMP_CONFIG"
+        return
+    fi
+
+    echo "$UPDATED_CONFIG" | write_xray_config
+    rm "$TMP_CONFIG"
+    
+    restart_xray
+
+    echo -e "${GREEN}New VLESS User Added!${NC}"
+    echo -e "UUID: ${YELLOW}$NEW_USER_UUID${NC}"
+    echo -e "Client Config Details (VLESS over WebSocket + TLS on Port 443):"
+    echo -e "  Address: $(get_domain)"
+    echo -e "  Port: 443"
+    echo -e "  UUID: $NEW_USER_UUID"
+    echo -e "  Security: TLS"
+    echo -e "  SNI: $(get_domain)"
+    echo -e "  Network: ws"
+    echo -e "  Path: /vlessws"
+    echo -e "  Flow: (empty/default)"
+    echo -e "${GREEN}Please update your client with these details.${NC}"
+}
+
+delete_user() {
+    echo -e "${YELLOW}Deleting XRAY user...${NC}"
+    read -p "Enter UUID of user to delete: " USER_UUID_TO_DELETE
+
+    CURRENT_CONFIG=$(read_xray_config)
+    TMP_CONFIG=$(mktemp)
+    echo "$CURRENT_CONFIG" > "$TMP_CONFIG"
+
+    INBOUND_INDEX=$(jq '.inbounds | map(.port == 443) | index(true)' "$TMP_CONFIG")
+
+    if [ "$INBOUND_INDEX" == "null" ]; then
+        print_menu_error "Error: Inbound for port 443 (VLESS) not found in config. Cannot delete user."
+        rm "$TMP_CONFIG"
+        return
+    fi
+
+    UPDATED_CONFIG=$(jq --arg uuid "$USER_UUID_TO_DELETE" \
+                        '.inbounds['"$INBOUND_INDEX"'].settings.clients |= map(select(.id != $uuid))' \
+                        "$TMP_CONFIG")
+
+    if [ $? -ne 0 ]; then
+        print_menu_error "Failed to delete user from config. jq error or invalid JSON structure."
+        rm "$TMP_CONFIG"
+        return
+    fi
+
+    echo "$UPDATED_CONFIG" | write_xray_config
+    rm "$TMP_CONFIG"
+    
+    restart_xray
+    echo -e "${GREEN}User $USER_UUID_TO_DELETE deleted!${NC}"
+}
+
+show_users() {
+    echo -e "${YELLOW}Listing XRAY VLESS users (Port 443):${NC}"
+    read_xray_config | jq '.inbounds[] | select(.port == 443 and .protocol == "vless") | .settings.clients[] | "\(.id) (\(.email))"' || print_menu_error "Failed to parse users. Config may be invalid."
+}
+
+show_config_details() {
+    echo -e "${YELLOW}Current XRAY VLESS Config Details (Port 443):${NC}"
+    LOCAL_DOMAIN=$(get_domain)
+    read_xray_config | jq --arg domain "$LOCAL_DOMAIN" \
+        '.inbounds[] | select(.port == 443 and .protocol == "vless") | 
+        "Address: \($domain)\nPort: \(.port)\nUUID: \(.settings.clients[0].id)\nSecurity: \(.streamSettings.security)\nSNI: \(.streamSettings.tlsSettings.serverName)\nNetwork: \(.streamSettings.network)\nPath: \(.streamSettings.wsSettings.path)\nFlow: (empty/default)"' \
+        || print_menu_error "Failed to retrieve config details. Check XRAY config."
+}
+
+change_domain() {
+    print_menu_status "Changing domain and re-issuing SSL certificate..."
+    read -p "Enter new subdomain (e.g., newtest): " NEW_SUBDOMAIN_INPUT 
+    
+    if [ -z "$NEW_SUBDOMAIN_INPUT" ]; then
+        print_menu_error "Subdomain cannot be empty. Aborting."
+        return
+    fi
+    
+    # Construct new full domain using the base domain from the installer
+    LOCAL_BASE_DOMAIN=$(get_domain | sed 's/^[^.]*\.//') # Extract base domain from current full domain
+    NEW_FULL_DOMAIN_MENU="$NEW_SUBDOMAIN_INPUT.$LOCAL_BASE_DOMAIN" 
+
+    read -p "Enter your admin email for acme.sh (e.g., admin@yourdomain.com): " NEW_ADMIN_EMAIL_INPUT
+
+    if [ -z "$NEW_ADMIN_EMAIL_INPUT" ]; then
+        print_menu_error "Email cannot be empty. Aborting."
+        return
+    fi
+
+    # Stop XRAY temporarily
+    sudo systemctl stop xray.service || print_menu_error "Failed to stop XRAY."
+
+    # Read Cloudflare API credentials from the secure file
+    if [ -f "$CLOUDFLARE_API_CRED_FILE" ]; then
+        source "$CLOUDFLARE_API_CRED_FILE" # Source the secure file (will set CLOUDFLARE_API_KEY and ADMIN_EMAIL)
+    else
+        print_menu_error "Cloudflare API credentials file not found: $CLOUDFLARE_API_CRED_FILE. Cannot proceed."
+        sudo systemctl start xray.service
+        return
+    fi
+
+    # Export Cloudflare API credentials for acme.sh
+    export CF_Key="$CLOUDFLARE_API_KEY" # Use variable from sourced file
+    export CF_Email="$NEW_ADMIN_EMAIL_INPUT" # Use provided email for this specific run
+
+    if [ -z "$CF_Key" ]; then 
+        print_menu_error "Cloudflare Global API Key is empty from $CLOUDFLARE_API_CRED_FILE. Please check its content."
+        sudo systemctl start xray.service
+        return
+    fi
+
+    ACME_SH_CMD="$HOME/.acme.sh/acme.sh" 
+    "$ACME_SH_CMD" --issue -d "$NEW_FULL_DOMAIN_MENU" --dns dns_cf || {
+        print_menu_error "Failed to issue new certificate. Check DNS or Cloudflare API Key."
+        unset CF_Key; unset CF_Email; 
+        sudo systemctl start xray.service 
+        return
+    }
+
+    # Install new cert for XRAY
+    "$ACME_SH_CMD" --install-cert -d "$NEW_FULL_DOMAIN_MENU" \
+    --key-file "$XRAY_TLS_DIR/private.key" \
+    --fullchain-file "$XRAY_TLS_DIR/fullchain.pem" \
+    --reloadcmd "sudo systemctl restart xray.service" || print_menu_error "Failed to install new certificate."
+
+    # Update domain in XRAY config
+    CURRENT_CONFIG=$(read_xray_config)
+    UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg domain "$NEW_FULL_DOMAIN_MENU" \
+                                                    '.inbounds[] | select(.port == 443 and .protocol == "vless") | 
+                                                    .streamSettings.tlsSettings.serverName = $domain | 
+                                                    .streamSettings.wsSettings.headers.Host = $domain')
+    echo "$UPDATED_CONFIG" | write_xray_config
+    echo "$NEW_FULL_DOMAIN_MENU" | sudo tee "$DOMAIN_FILE" >/dev/null 
+
+    unset CF_Key; unset CF_Email; 
+
+    restart_xray
+    echo -e "${GREEN}Domain updated to $NEW_FULL_DOMAIN_MENU!${NC}"
+}
+
+xray_status() {
+    echo -e "${YELLOW}XRAY Service Status:${NC}"
+    sudo systemctl status xray.service
+}
+
+show_logs() {
+    echo -e "${YELLOW}Showing XRAY Logs (press Ctrl+C to exit):${NC}"
+    sudo journalctl -f -u xray
+}
+
+main_menu() {
+    while true; do
+        clear
+        print_menu_header 
+        echo -e "  XRAY Management Menu for ${YELLOW}$(get_domain)${NC}"
+        echo -e "====================================================="
+        echo -e "  1. Add New User"
+        echo -e "  2. Delete User"
+        echo -e "  3. List All Users"
+        echo -e "  4. Show Client Config Details"
+        echo -e "  5. Check XRAY Service Status"
+        echo -e "  6. Show XRAY Logs"
+        echo -e "  7. Change Domain / Reissue Cert"
+        echo "WARNING: Rebooting server will disconnect all users."
+        echo -e "  8. Reboot Server"
+        echo -e "  0. Exit"
+        echo -e "-----------------------------------------------------"
+        read -p "Enter your choice: " CHOICE
+
+        case "$CHOICE" in
+            1) add_user ;;
+            2) delete_user ;;
+            3) show_users ;;
+            4) show_config_details ;;
+            5) xray_status ;;
+            6) show_logs ;;
+            7) change_domain ;;
+            8) 
+                read -p "Are you sure you want to reboot the server? (y/N): " REBOOT_CONFIRM
+                if [[ "$REBOOT_CONFIRM" =~ ^[Yy]$ ]]; then
+                    echo -e "${RED}Rebooting server...${NC}"
+                    sudo reboot
+                else
+                    echo -e "${YELLOW}Reboot cancelled.${NC}"
+                fi
+                ;;
+            0) echo -e "${YELLOW}Exiting. Goodbye!${NC}"; exit 0 ;;
+            *) echo -e "${RED}Invalid choice. Please try again.${NC}"; sleep 1 ;;
+        esac 
+        echo -e "\nPress Enter to continue..."
+        read -s # Read silently
+    done
+}
+
+main_menu # Call the main menu function to start the script
+EOF_MENU_SCRIPT
+" "$MENU_SCRIPT_PATH" "$XRAY_CONFIG_DIR/config.json" "$XRAY_CONFIG_DIR/domain.txt" "$XRAY_BIN_PATH" "$XRAY_TLS_DIR" "$XRAY_CONFIG_DIR/cf_api.conf" # Pass CF API cred file path
+
+sudo chmod +x "$MENU_SCRIPT_PATH" || print_error "Failed to make menu script executable."
+
+# --- Create alias for 'xray_menu' command ---
+# For current user (root)
+echo "alias menu='sudo $MENU_SCRIPT_PATH'" | sudo tee -a "$HOME/.bashrc" >/dev/null
+echo "alias menu='sudo $MENU_SCRIPT_PATH'" | sudo tee -a "$HOME/.profile" >/dev/null
+
+# For system-wide immediate effect, also symlink
+sudo ln -sf "$MENU_SCRIPT_PATH" /usr/local/bin/menu
+
+print_header
+echo -e "${GREEN}XRAY Installation Complete!${NC}"
+echo -e "Your primary VLESS UUID is: ${YELLOW}$DEFAULT_UUID_INSTALL${NC}"
+echo -e "To manage XRAY users and settings, simply type: ${YELLOW}sudo menu${NC}"
+echo -e "\n${YELLOW}Remember to configure your client with these details:${NC}"
+echo -e "  Protocol: VLESS"
+echo -e "  Address: ${YELLOW}$FULL_DOMAIN${NC}"
+echo -e "  Port: 443"
+echo -e "  UUID: ${YELLOW}$DEFAULT_UUID_INSTALL${NC}"
+echo -e "  Security: TLS"
+echo -e "  SNI: ${YELLOW}$FULL_DOMAIN${NC}"
+echo -e "  Network: ws"
+echo -e "  Path: /vlessws"
+echo -e "  Flow: (empty/default)"
+echo -e "\n${RED}IMPORTANT: Ensure your VPS/Cloud provider's firewall allows incoming connections on ports 80, 443, and 22!${NC}"
+echo -e "${GREEN}=====================================================${NC}"

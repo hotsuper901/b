@@ -1,0 +1,140 @@
+#!/bin/bash
+export DEBIAN_FRONTEND=noninteractive
+OS=$(uname -m)
+MYIP=$(wget -qO- ipinfo.io/ip)
+domain=$(cat /root/domain)
+MYIP2="s/xxxxxxxxx/$domain/g"
+
+function ovpn_install() {
+    rm -rf /etc/openvpn
+    mkdir -p /etc/openvpn
+    wget -O /etc/openvpn/vpn.zip "https://github.com/hokagelegend9999/alpha.v2/raw/refs/heads/main/config/vpn.zip" >/dev/null 2>&1
+    unzip -d /etc/openvpn/ /etc/openvpn/vpn.zip
+    rm -f /etc/openvpn/vpn.zip
+    chown -R root:root /etc/openvpn/server/easy-rsa/
+}
+
+function config_easy() {
+    mkdir -p /usr/lib/openvpn/
+    cp /usr/lib/x86_64-linux-gnu/openvpn/plugins/openvpn-plugin-auth-pam.so /usr/lib/openvpn/openvpn-plugin-auth-pam.so
+
+    # Jalankan config OpenVPN server dengan nama file "server-tcp.conf" dan "server-udp.conf"
+    systemctl enable --now openvpn-server@server-tcp
+    systemctl enable --now openvpn-server@server-udp
+}
+
+function make_follow() {
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
+    sysctl -p
+
+    cat > /etc/openvpn/tcp.ovpn <<-END
+client
+dev tun
+proto tcp
+remote xxxxxxxxx 1194
+resolv-retry infinite
+route-method exe
+nobind
+persist-key
+persist-tun
+auth-user-pass
+comp-lzo
+verb 3
+END
+    sed -i "$MYIP2" /etc/openvpn/tcp.ovpn
+
+    cat > /etc/openvpn/udp.ovpn <<-END
+client
+dev tun
+proto udp
+remote xxxxxxxxx 2200
+resolv-retry infinite
+route-method exe
+nobind
+persist-key
+persist-tun
+auth-user-pass
+comp-lzo
+verb 3
+END
+    sed -i "$MYIP2" /etc/openvpn/udp.ovpn
+
+    cat > /etc/openvpn/ws-ssl.ovpn <<-END
+client
+dev tun
+proto tcp
+remote xxxxxxxxx 443
+resolv-retry infinite
+route-method exe
+nobind
+persist-key
+persist-tun
+auth-user-pass
+comp-lzo
+verb 3
+END
+    sed -i "$MYIP2" /etc/openvpn/ws-ssl.ovpn
+
+    cat > /etc/openvpn/ssl.ovpn <<-END
+client
+dev tun
+proto tcp
+remote xxxxxxxxx 443
+resolv-retry infinite
+route-method exe
+nobind
+persist-key
+persist-tun
+auth-user-pass
+comp-lzo
+verb 3
+END
+    sed -i "$MYIP2" /etc/openvpn/ssl.ovpn
+}
+
+function cert_ovpn() {
+    for i in tcp udp ws-ssl ssl; do
+        echo '<ca>' >> /etc/openvpn/${i}.ovpn
+        cat /etc/openvpn/server/ca.crt >> /etc/openvpn/${i}.ovpn
+        echo '</ca>' >> /etc/openvpn/${i}.ovpn
+        cp /etc/openvpn/${i}.ovpn /var/www/html/${i}.ovpn
+    done
+
+    cd /var/www/html/
+    zip Kyt-Project.zip tcp.ovpn udp.ovpn ssl.ovpn ws-ssl.ovpn >/dev/null 2>&1
+    cd
+
+    cat <<'mySiteOvpn' > /var/www/html/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>OVPN HOKAGE Config Download</title>
+<meta name="description" content="Server" />
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport" />
+<meta name="theme-color" content="#000000" />
+<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.8.2/css/all.css">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.3.1/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/mdbootstrap/4.8.3/css/mdb.min.css" rel="stylesheet">
+</head><body><div class="container justify-content-center" style="margin-top:9em;margin-bottom:5em;"><div class="col-md"><div class="view"><img src="https://openvpn.net/wp-content/uploads/openvpn.jpg" class="card-img-top"><div class="mask rgba-white-slight"></div></div><div class="card"><div class="card-body"><h5 class="card-title">Config List</h5><br /><ul class="list-group">
+<li class="list-group-item"><p>TCP</p><a class="btn btn-outline-success btn-sm" href="https://IP-ADDRESSS:81/tcp.ovpn">Download</a></li>
+<li class="list-group-item"><p>UDP</p><a class="btn btn-outline-success btn-sm" href="https://IP-ADDRESSS:81/udp.ovpn">Download</a></li>
+<li class="list-group-item"><p>SSL</p><a class="btn btn-outline-success btn-sm" href="https://IP-ADDRESSS:81/ssl.ovpn">Download</a></li>
+<li class="list-group-item"><p>WS SSL</p><a class="btn btn-outline-success btn-sm" href="https://IP-ADDRESSS:81/ws-ssl.ovpn">Download</a></li>
+<li class="list-group-item"><p>All Configs (ZIP)</p><a class="btn btn-outline-success btn-sm" href="https://IP-ADDRESSS:81/Kyt-Project.zip">Download</a></li>
+</ul></div></div></div></div></body></html>
+mySiteOvpn
+
+    sed -i "s|IP-ADDRESSS|$(curl -sS ifconfig.me)|g" /var/www/html/index.html
+}
+
+function install_ovpn() {
+    apt update -y
+    apt install openvpn unzip curl -y
+
+    ovpn_install
+    config_easy
+    make_follow
+    cert_ovpn
+}
+
+install_ovpn
